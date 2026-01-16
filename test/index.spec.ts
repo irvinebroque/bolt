@@ -1,24 +1,82 @@
-import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
-import worker from '../src/index';
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { unstable_dev } from "wrangler";
+import type { Unstable_DevWorker } from "wrangler";
 
-// For now, you'll need to do something like this to get a correctly-typed
-// `Request` to pass to `worker.fetch()`.
-const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+describe("Bolt.js Slack Worker", () => {
+	let worker: Unstable_DevWorker;
 
-describe('Hello World worker', () => {
-	it('responds with Hello World! (unit style)', async () => {
-		const request = new IncomingRequest('http://example.com');
-		// Create an empty context to pass to `worker.fetch()`.
-		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
-		// Wait for all `Promise`s passed to `ctx.waitUntil()` to settle before running test assertions
-		await waitOnExecutionContext(ctx);
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+	beforeAll(async () => {
+		worker = await unstable_dev("src/index.ts", {
+			experimental: { disableExperimentalWarning: true },
+		});
 	});
 
-	it('responds with Hello World! (integration style)', async () => {
-		const response = await SELF.fetch('https://example.com');
-		expect(await response.text()).toMatchInlineSnapshot(`"Hello World!"`);
+	afterAll(async () => {
+		await worker?.stop();
+	});
+
+	it("responds to URL verification challenge", async () => {
+		const response = await worker.fetch("/slack/events", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				type: "url_verification",
+				challenge: "test-challenge-abc123",
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		const json = await response.json();
+		expect(json).toEqual({ challenge: "test-challenge-abc123" });
+	});
+
+	it("responds to SSL check", async () => {
+		const response = await worker.fetch("/slack/events", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ssl_check: "1" }),
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	it("accepts event callbacks", async () => {
+		const response = await worker.fetch("/slack/events", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				type: "event_callback",
+				event: {
+					type: "message",
+					text: "hello",
+					channel: "C123456",
+					user: "U123456",
+					ts: "1234567890.123456",
+				},
+				team_id: "T123456",
+				api_app_id: "A123456",
+				event_id: "Ev123456",
+				event_time: 1234567890,
+			}),
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	it("accepts slash commands", async () => {
+		const response = await worker.fetch("/slack/events", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				command: "/echo",
+				text: "Hello Workers",
+				user_id: "U123",
+				team_id: "T123",
+				channel_id: "C123",
+				response_url: "https://hooks.slack.com/commands/test",
+			}).toString(),
+		});
+
+		expect(response.status).toBe(200);
 	});
 });
